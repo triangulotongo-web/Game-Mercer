@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mad Liquid: Rescate en el Infierno</title>
+<style>
+  html,body{margin:0;padding:0;background:#0a0a12;height:100%;overflow:hidden;font-family:'Courier New',monospace}
+  #wrap{display:flex;align-items:center;justify-content:center;height:100vh}
+  canvas{background:#111;image-rendering:pixelated;box-shadow:0 0 40px #000}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game" width="960" height="540"></canvas></div>
+<script>
+"use strict";
+const cv = document.getElementById("game"), ctx = cv.getContext("2d");
+const W = 960, H = 540, GROUND = 460;
+const keys = {};
+addEventListener("keydown", e => { keys[e.key.toLowerCase()] = true; if(["arrowup","arrowdown"," ","arrowleft","arrowright"].includes(e.key.toLowerCase())) e.preventDefault(); });
+addEventListener("keyup", e => { keys[e.key.toLowerCase()] = false; });
+
+const rand = (a,b)=>a+Math.random()*(b-a);
+const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+function rectHit(a,b){ return Math.abs(a.x-b.x)<(a.w+b.w)/2 && Math.abs(a.y-b.y)<(a.h+b.h)/2; }
+
+const STORY = [
+  "Mr110, harto de las burlas del canal...",
+  "...decide que es hora de SECUESTRAR a MAD LIQUID y llevarlo al INFIERNO.",
+  "2PATATA y TIAMANT lo descubren todo...",
+  "...y deciden ir a su RESCATE para salvarlo.",
+  "En la trayectoria se encontraran con los SEGUIDORES del canal, POKEX (el millonario), MIENTRASLEO (la patriarca) y OXAGOAT (la cabra)...",
+  "...todos ellos enemigos que secuestraron a Liquid.",
+  "MISION: Salvar a Mad Liquid del INFIERNO de Mr110."
+];
+const BOSSES = [
+  {name:"SEGUIDORES DEL CANAL", sub:"¡Hordas fanaticas!", hp:60, bg:"#1b2a4a", theme:"wave"},
+  {name:"POKEX", sub:"El Millonario", hp:90, bg:"#2a3a1b", theme:"pokex"},
+  {name:"MIENTRASLEO", sub:"La Patriarca", hp:120, bg:"#3a1b2a", theme:"leo"},
+  {name:"OXAGOAT", sub:"La Cabra", hp:150, bg:"#3a2a1b", theme:"goat"},
+  {name:"MR110", sub:"Senor del Infierno", hp:200, bg:"#3a0a0a", theme:"final"}
+];
+
+let state = "menu";
+let storyIdx = 0, bossIdx = 0, transition = 0, transitionCb = null;
+let frames = 0, shake = 0;
+let projectiles = [], pbullets = [], particles = [], pickups = [], texts = [];
+let ko = 0, koDone = false;
+
+const player = {};
+function resetPlayer(){
+  Object.assign(player, { x:140, y:GROUND, vx:0, vy:0, w:26, h:44, hp:3, inv:0, face:1, dash:0, dashCd:0, shootCd:0, onGround:true, jumpCount:0 });
+}
+function startGame(char){
+  player.char = char; bossIdx = 0; resetPlayer(); loadBoss();
+  state = "play";
+}
+function loadBoss(){
+  const b = BOSSES[bossIdx];
+  projectiles=[];pbullets=[];particles=[];pickups=[];texts=[];ko=0;koDone=false;
+  resetPlayer();
+  boss = { def:b, name:b.name, sub:b.sub, hp:b.hp, maxHp:b.hp, x:W-180, y:GROUND-60, w:70, h:100, t:0, atkT:120, phase:0, dead:false, hitFlash:0,
+    ox:0, oy:0, angle:0, minions:[] };
+  if(b.theme==="wave"){
+    boss.x = W/2; boss.y = 200; boss.w=90; boss.h=90; boss.speak = "¡LIQUID ES NUESTRO, AQUI NO PASAS!";
+    boss.taunt = 180;
+  } else boss.taunt = 60;
+}
+let boss = null;
+
+function part(x,y,c,n=8,sp=4){
+  for(let i=0;i<n;i++) particles.push({x,y,vx:rand(-sp,sp),vy:rand(-sp,sp),life:rand(20,45),c});
+}
+function txt(x,y,s,c="#fff",size=18){ texts.push({x,y,s,c,size,life:60}); }
+
+function setState(s){ transition=40; transitionCb=()=>{state=s;}; }
+
+function updatePlayer(){
+  const spd = 4.2;
+  if(player.dash>0){ player.dash--; player.vx = player.face*10; if(Math.random()<.5) part(player.x,player.y, "#ffdd55",1,2); }
+  else {
+    player.vx = 0;
+    if(keys["arrowleft"]||keys["a"]){ player.vx=-spd; player.face=-1; }
+    if(keys["arrowright"]||keys["d"]){ player.vx=spd; player.face=1; }
+    if((keys["arrowup"]||keys["w"]||keys[" "]) && player.onGround){ player.vy=-13; player.onGround=false; }
+    if(keys["shift"] && player.dashCd<=0){ player.dash=12; player.dashCd=50; }
+  }
+  player.dashCd--;
+  player.vy += 0.7;
+  player.x = clamp(player.x+player.vx, 20, W-20);
+  player.y += player.vy;
+  if(player.y>=GROUND){ player.y=GROUND; player.vy=0; player.onGround=true; }
+  if(player.inv>0) player.inv--;
+  player.shootCd--;
+  if((keys["z"]||keys["x"]) && player.shootCd<=0){
+    player.shootCd = 9;
+    pbullets.push({x:player.x+player.face*18, y:player.y-14, vx:player.face*11, vy:0, w:10,h:6, dmg:2});
+    part(player.x+player.face*20, player.y-14, player.char==="2patata"?"#ff8844":"#66ddff",2,2);
+  }
+}
+function hurtPlayer(){
+  if(player.inv>0 || player.dash>0) return;
+  player.hp--; player.inv=90; shake=10;
+  part(player.x,player.y,"#ff4444",12,5);
+  if(player.hp<=0){ player.hp=0; state="gameover"; }
+}
+function updateBullets(){
+  for(const b of pbullets){
+    b.x+=b.vx; b.y+=b.vy;
+    if(boss && !boss.dead && rectHit(b,boss)){
+      boss.hp-=b.dmg; boss.hitFlash=6; b.dead=true;
+      part(b.x,b.y,"#ffff88",4,3);
+      if(boss.hp<=0){ boss.dead=true; ko=1; koDone=false; shake=16; part(boss.x,boss.y,"#ffd700",40,8); }
+    }
+    for(const m of (boss?boss.minions:[])){
+      if(!m.dead && rectHit(b,m)){ m.hp-=b.dmg; b.dead=true; part(b.x,b.y,"#fff",4,3);
+        if(m.hp<=0){ m.dead=true; part(m.x,m.y,"#f0f",12,5); } }
+    }
+  }
+  pbullets = pbullets.filter(b=>!b.dead && b.x>-20 && b.x<W+20);
+  for(const p of projectiles){
+    p.x+=p.vx; p.y+=p.vy; p.vy+=(p.grav||0);
+    if(p.sinA!==undefined) p.y += Math.sin((p.t=(p.t||0)+1)/14)*2;
+    if(rectHit(p,player)){ p.dead=true; hurtPlayer(); }
+    if(p.x<-60||p.x>W+60||p.y>H+60||p.y<-80) p.dead=true;
+  }
+  projectiles = projectiles.filter(p=>!p.dead);
+  for(const pk of pickups){
+    pk.x+=pk.vx; pk.y+=pk.vy; pk.vy+=0.4;
+    if(pk.y>GROUND){pk.y=GROUND;pk.vy*=-0.5;}
+    if(rectHit(pk,player)){ pk.dead=true; if(player.hp<3){player.hp++; txt(player.x,player.y-50,"+1 HP","#6f6");} else txt(player.x,player.y-50,"MAX","#6f6"); }
+  }
+  pickups = pickups.filter(p=>!p.dead && p.life-- >0);
+  for(const pt of particles){ pt.x+=pt.vx; pt.y+=pt.vy; pt.vy+=0.15; pt.life--; }
+  particles = particles.filter(p=>p.life>0);
+  for(const t of texts){ t.y-=0.7; t.life--; }
+  texts = texts.filter(t=>t.life>0);
+}
+
+function bossAttack(){
+  const th = boss.def.theme;
+  const P = (vx,vy,opts={}) => projectiles.push(Object.assign({x:boss.x,y:boss.y-20,vx,vy,w:16,h:16,grav:0},opts));
+  if(th==="wave"){
+    if(Math.random()<.35) boss.minions.push({x:W+30,y:rand(140,GROUND-20),vx:-2.2,w:26,h:34,hp:4,dead:false,bob:Math.random()*10});
+    boss.minions.forEach(m=>{ m.x+=m.vx; m.bob+=0.1; if(rectHit(m,player)) hurtPlayer(); });
+    boss.minions = boss.minions.filter(m=>!m.dead && m.x>-40);
+    if(boss.t%40===0) P(-4,rand(-2,2),{w:14,h:14});
+  } else if(th==="pokex"){
+    if(boss.t%50===0){ for(let i=0;i<3;i++) P(-rand(3,6),rand(-5,-1),{c:"#6f6",grav:0.25,w:14,h:10}); }
+    if(boss.t%180===0) pickups.push({x:boss.x,y:boss.y-80,vx:rand(-4,-2),vy:-3,w:14,h:14,life:600});
+    boss.x = W-180 + Math.sin(boss.t/40)*200;
+  } else if(th==="leo"){
+    boss.angle = (boss.angle+0.05)%(Math.PI*2);
+    if(boss.t%6===0){ const a=boss.angle; P(Math.cos(a)*4, Math.sin(a)*4, {c:"#ffd", w:12,h:12}); }
+    if(boss.t%140===0){ for(let i=0;i<8;i++) P(-3, -8+i*2, {c:"#f8f", grav:0.15, w:12,h:12}); }
+  } else if(th==="goat"){
+    if(boss.chargeT>0){ boss.chargeT--; boss.x-=9; if(boss.x<80) boss.chargeT=0; if(rectHit(boss,player)) hurtPlayer(); }
+    else if(boss.t%110===0){ boss.chargeT=40; shake=6; }
+    else boss.x += Math.sin(boss.t/30)*3;
+    if(boss.t%36===0) P(-4.5, rand(-3,-1),{c:"#fa3", grav:0.2, w:13,h:13, sinA:1});
+    if(rectHit(boss,player)) hurtPlayer();
+  } else if(th==="final"){
+    const ph = boss.hp > boss.maxHp/2 ? 0 : 1;
+    boss.phase=ph;
+    if(boss.t%(30-ph*12)===0){ for(let i=0;i<2+ph;i++) P(-rand(3,7), rand(-4,4), {c:ph?"#f4f":"#f80", w:14,h:14}); }
+    if(boss.t%90===0) part(boss.x,boss.y,"#f00",20,6);
+    if(ph===1 && boss.t%150===0){ for(let i=0;i<10;i++){const a=i/10*Math.PI*2; P(Math.cos(a)*4, Math.sin(a)*4, {c:"#ff0",w:12,h:12});} }
+    if(boss.t%220===0) pickups.push({x:boss.x,y:boss.y-80,vx:-3,vy:-4,w:14,h:14,life:600});
+    if(rectHit(boss,player) && Math.abs(boss.x-player.x)<50) hurtPlayer();
+  }
+}
+
+function updatePlay(){
+  frames++;
+  if(shake>0) shake--;
+  updatePlayer(); updateBullets();
+  if(boss){
+    boss.t++; boss.hitFlash--;
+    if(boss.taunt>0) boss.taunt--;
+    if(!boss.dead) bossAttack();
+    if(ko>0){
+      ko++;
+      if(ko===30) txt(W/2, H/2-80, "¡A KNOCKOUT!", "#ffd700", 42);
+      if(ko>60 && Math.random()<.3) part(boss.x+rand(-40,40), boss.y+rand(-40,40), rand(0,1)<.5?"#ffd700":"#f60", 6, 6);
+      if(ko>150 && !koDone){ koDone=true;
+        bossIdx++;
+        if(bossIdx>=BOSSES.length) setState("win");
+        else { setState("intro"); }
+      }
+    }
+  }
+}
+
+function drawPlayer(){
+  const c = player.char==="2patata" ? ["#e8a33d","#8a5a1a"] : ["#5ac8fa","#1a5a8a"];
+  ctx.save();
+  if(player.inv>0 && Math.floor(frames/4)%2===0) ctx.globalAlpha=0.4;
+  ctx.translate(player.x, player.y);
+  ctx.scale(player.face,1);
+  ctx.fillStyle=c[1]; ctx.fillRect(-16,-44,32,10);
+  ctx.fillStyle=c[0];
+  ctx.beginPath(); ctx.roundRect(-13,-34,26,34,6); ctx.fill();
+  ctx.fillStyle="#fff"; ctx.fillRect(-8,-40,6,6); ctx.fillRect(2,-40,6,6);
+  ctx.fillStyle="#000"; ctx.fillRect(-6,-38,3,3); ctx.fillRect(4,-38,3,3);
+  ctx.fillStyle=c[1]; ctx.fillRect(4,-26,16,7);
+  ctx.restore();
+}
+function drawBoss(){
+  if(!boss) return;
+  const th = boss.def.theme;
+  ctx.save();
+  if(boss.hitFlash>0){ ctx.filter="brightness(2)"; }
+  const bx=boss.x, by=boss.y;
+  if(th==="wave"){
+    ctx.fillStyle="#448"; ctx.beginPath(); ctx.roundRect(bx-45,by-45,90,90,20); ctx.fill();
+    ctx.fillStyle="#fff"; ctx.font="bold 22px Courier New"; ctx.textAlign="center";
+    ctx.fillText("👥", bx, by+8);
+    ctx.fillStyle="#fff"; ctx.font="bold 12px Courier New";
+    ctx.fillText("SEGUIDORES", bx, by-55);
+  } else if(th==="pokex"){
+    ctx.fillStyle="#2f2"; ctx.beginPath(); ctx.roundRect(bx-30,by-70,60,140,15); ctx.fill();
+    ctx.fillStyle="#cfa41f"; ctx.beginPath(); ctx.moveTo(bx-20,by-70); ctx.lineTo(bx+20,by-70); ctx.lineTo(bx,by-100); ctx.fill();
+    ctx.fillStyle="#fff"; ctx.font="bold 40px Courier New"; ctx.textAlign="center"; ctx.fillText("$", bx, by);
+  } else if(th==="leo"){
+    ctx.fillStyle="#e8c";
+    ctx.beginPath(); ctx.roundRect(bx-35,by-80,70,160,20); ctx.fill();
+    ctx.fillStyle="#fff"; ctx.beginPath(); ctx.arc(bx,by-90,22,0,7); ctx.fill();
+    ctx.fillStyle="#a06"; ctx.font="bold 20px Courier New"; ctx.textAlign="center"; ctx.fillText("✝", bx, by-83);
+  } else if(th==="goat"){
+    ctx.fillStyle="#cbb";
+    ctx.beginPath(); ctx.roundRect(bx-35,by-50,70,110,18); ctx.fill();
+    ctx.fillStyle="#998"; ctx.beginPath(); ctx.arc(bx-14,by-60,8,0,7); ctx.arc(bx+14,by-60,8,0,7); ctx.fill();
+    ctx.fillStyle="#422"; ctx.beginPath(); ctx.arc(bx-15,by-72,4,0,7); ctx.arc(bx+15,by-72,4,0,7); ctx.fill();
+  } else {
+    ctx.fillStyle="#811"; ctx.beginPath(); ctx.roundRect(bx-40,by-90,80,180,25); ctx.fill();
+    ctx.fillStyle="#400"; ctx.beginPath(); ctx.moveTo(bx-30,by-90); ctx.lineTo(bx-14,by-130); ctx.lineTo(bx,by-90); ctx.lineTo(bx+14,by-130); ctx.lineTo(bx+30,by-90); ctx.fill();
+    ctx.fillStyle="#ff0"; ctx.fillRect(bx-20,by-70,10,10); ctx.fillRect(bx+10,by-70,10,10);
+    ctx.fillStyle="#f80"; ctx.beginPath(); ctx.arc(bx,by-20,26,0,7); ctx.fill();
+    ctx.fillStyle="#fda"; ctx.font="bold 26px Courier New"; ctx.textAlign="center"; ctx.fillText("110", bx,by-12);
+  }
+  ctx.restore();
+  for(const m of boss.minions){
+    if(m.dead) continue;
+    ctx.save(); ctx.translate(m.x, m.y+Math.sin(m.bob)*4);
+    ctx.fillStyle="#84f"; ctx.beginPath(); ctx.roundRect(-13,-17,26,34,8); ctx.fill();
+    ctx.fillStyle="#fff"; ctx.fillRect(-6,-12,4,4); ctx.fillRect(2,-12,4,4);
+    ctx.restore();
+  }
+}
+function drawHUD(){
+  ctx.fillStyle="#000"; ctx.fillRect(0,0,W,34);
+  ctx.fillStyle="#fff"; ctx.font="bold 14px Courier New"; ctx.textAlign="left";
+  ctx.fillText("HP:",10,22);
+  for(let i=0;i<3;i++){ ctx.fillStyle = i<player.hp?"#f33":"#422"; ctx.fillRect(40+i*22,10,16,16); }
+  ctx.textAlign="center"; ctx.fillStyle="#ffd700";
+  ctx.fillText(`JEFE ${bossIdx+1}/5: ${boss.name} — ${boss.sub}`, W/2, 22);
+  const bw = W-260;
+  ctx.fillStyle="#333"; ctx.fillRect(250,44,bw,10);
+  ctx.fillStyle=boss.dead?"#6f6":"#f44"; ctx.fillRect(250,44,bw*Math.max(0,boss.hp)/boss.maxHp,10);
+  ctx.strokeStyle="#fff"; ctx.strokeRect(250,44,bw,10);
+}
+function drawTexts(){
+  for(const t of texts){ ctx.globalAlpha=Math.min(1,t.life/30); ctx.fillStyle=t.c; ctx.font=`bold ${t.size}px Courier New`; ctx.textAlign="center"; ctx.fillText(t.s,t.x,t.y); }
+  ctx.globalAlpha=1;
+}
+function drawTitle(){
+  ctx.fillStyle="#180a0a"; ctx.fillRect(0,0,W,H);
+  ctx.textAlign="center";
+  ctx.fillStyle="#ffd700"; ctx.font="bold 52px Courier New";
+  ctx.fillText("MAD LIQUID", W/2, 120);
+  ctx.fillStyle="#f44"; ctx.fillText("RESCATE EN EL INFIERNO", W/2, 170);
+  ctx.font="16px Courier New"; ctx.fillStyle="#ccc";
+  ctx.fillText("Mr110 ha secuestrado a Mad Liquid. 2patata y Tiamant van al rescate.", W/2, 220);
+  ctx.fillStyle="#fff"; ctx.font="bold 20px Courier New";
+  ctx.fillText("[1] Jugar como 2PATATA", W/2, 300);
+  ctx.fillText("[2] Jugar como TIAMANT", W/2, 330);
+  ctx.fillText("[ENTER] Ver la historia", W/2, 380);
+  ctx.fillStyle="#888"; ctx.font="14px Courier New";
+  ctx.fillText("Flechas/WASD mover · ESPACIO saltar · Z disparar · SHIFT dash", W/2, 470);
+}
+function drawStory(){
+  ctx.fillStyle="#08080f"; ctx.fillRect(0,0,W,H);
+  ctx.textAlign="center"; ctx.fillStyle="#fff"; ctx.font="bold 20px Courier New";
+  wrap(STORY[storyIdx], W/2, 240, 46, 24);
+  ctx.fillStyle="#888"; ctx.font="14px Courier New";
+  ctx.fillText(`(${storyIdx+1}/${STORY.length}) ENTER: continuar`, W/2, 460);
+}
+function wrap(s,x,y,lh,size){
+  ctx.font=`bold ${size}px Courier New`;
+  const words=s.split(" "); let line="", yy=y;
+  for(const w of words){ if((line+w).length>34){ ctx.fillText(line,x,yy); yy+=lh; line=""; } line+=w+" "; }
+  ctx.fillText(line,x,yy);
+}
+function drawIntro(){
+  ctx.fillStyle=BOSSES[bossIdx].bg; ctx.fillRect(0,0,W,H);
+  ctx.textAlign="center";
+  ctx.fillStyle="#fff"; ctx.font="bold 44px Courier New";
+  ctx.fillText(BOSSES[bossIdx].name, W/2, 200);
+  ctx.fillStyle="#ffd700"; ctx.font="bold 22px Courier New";
+  ctx.fillText(BOSSES[bossIdx].sub, W/2, 240);
+  ctx.fillStyle="#ccc"; ctx.font="14px Courier New";
+  ctx.fillText("ENTER / Z para empezar", W/2, 320);
+}
+function drawWin(){
+  ctx.fillStyle="#123"; ctx.fillRect(0,0,W,H);
+  ctx.textAlign="center";
+  ctx.fillStyle="#6f6"; ctx.font="bold 42px Courier New"; ctx.fillText("¡HAS SALVADO A MAD LIQUID!", W/2, 180);
+  ctx.fillStyle="#ffd700"; ctx.font="bold 28px Courier New"; ctx.fillText("★ VICTORIA ★", W/2, 240);
+  ctx.fillStyle="#fff"; ctx.font="16px Courier New";
+  ctx.fillText("2patata y Tiamant derrotaron a Mr110 y rescataron a Liquid.", W/2, 300);
+  ctx.fillText("Los seguidores, Pokex, Mientrasleo y Oxagoat fueron vencidos.", W/2, 330);
+  ctx.fillText("ENTER: volver al menu", W/2, 420);
+}
+function drawGameOver(){
+  ctx.fillStyle="#200"; ctx.fillRect(0,0,W,H);
+  ctx.textAlign="center"; ctx.fillStyle="#f33"; ctx.font="bold 48px Courier New";
+  ctx.fillText("¡HAS MUERTO!", W/2, 220);
+  ctx.fillStyle="#fff"; ctx.font="16px Courier New";
+  ctx.fillText("Los villanos se quedan con Mad Liquid...", W/2, 280);
+  ctx.fillText("ENTER: reintentar jefe · M: menu", W/2, 330);
+}
+
+function render(){
+  ctx.clearRect(0,0,W,H);
+  if(state==="menu") drawTitle();
+  else if(state==="story") drawStory();
+  else if(state==="intro") drawIntro();
+  else if(state==="gameover") drawGameOver();
+  else if(state==="win") drawWin();
+  else if(state==="play"){
+    ctx.save();
+    if(shake>0) ctx.translate(rand(-shake,shake),rand(-shake,shake));
+    ctx.fillStyle=boss.def.bg; ctx.fillRect(-20,-20,W+40,H+40);
+    ctx.fillStyle="rgba(0,0,0,0.25)";
+    for(let i=0;i<8;i++) ctx.fillRect((i*173+frames*0.3)%(W+80)-40, 60+((i*97)%(H-160)), 90, 12);
+    ctx.fillStyle="#111"; ctx.fillRect(0,GROUND+20,W,H-GROUND);
+    ctx.fillStyle="#222"; ctx.fillRect(0,GROUND+20,W,8);
+    if(boss.taunt>0 && !boss.dead){ ctx.fillStyle="#fff"; ctx.font="bold 16px Courier New"; ctx.textAlign="center";
+      ctx.fillText(boss.speak||`¡${boss.name} te bloquea el paso!`, W/2, 90); }
+    drawBoss(); drawPlayer();
+    for(const b of pbullets){ ctx.fillStyle=player.char==="2patata"?"#f80":"#0cf"; ctx.beginPath(); ctx.roundRect(b.x-5,b.y-3,10,6,3); ctx.fill(); }
+    for(const p of projectiles){ ctx.fillStyle=p.c||"#f44"; ctx.beginPath(); ctx.arc(p.x,p.y,p.w/2,0,7); ctx.fill(); }
+    for(const pk of pickups){ ctx.fillStyle="#6f6"; ctx.save(); ctx.translate(pk.x,pk.y); ctx.rotate(frames/10); ctx.fillRect(-7,-7,14,14); ctx.restore(); }
+    for(const pt of particles){ ctx.globalAlpha=pt.life/45; ctx.fillStyle=pt.c; ctx.fillRect(pt.x-2,pt.y-2,4,4); }
+    ctx.globalAlpha=1;
+    drawTexts(); drawHUD();
+    ctx.restore();
+  }
+  if(transition>0){ ctx.fillStyle=`rgba(0,0,0,${1-transition/40})`; ctx.fillRect(0,0,W,H); }
+}
+
+addEventListener("keydown", e => {
+  const k = e.key.toLowerCase();
+  if(transition>0) return;
+  if(state==="menu"){
+    if(k==="1") startGame("2patata");
+    if(k==="2") startGame("tiamant");
+    if(k==="enter"){ storyIdx=0; state="story"; }
+  } else if(state==="story"){
+    if(k==="enter"||k==="z"){ storyIdx++; if(storyIdx>=STORY.length){ bossIdx=0; state="intro"; } }
+  } else if(state==="intro"){
+    if(k==="enter"||k==="z"){ loadBoss(); state="play"; }
+  } else if(state==="gameover"){
+    if(k==="enter"){ loadBoss(); state="play"; }
+    if(k==="m") state="menu";
+  } else if(state==="win"){
+    if(k==="enter") state="menu";
+  }
+});
+
+function loop(){
+  if(transition>0){ transition--; if(transition===0 && transitionCb){ transitionCb(); transitionCb=null; } }
+  else if(state==="play") updatePlay();
+  render();
+  requestAnimationFrame(loop);
+}
+ctx.textBaseline="middle";
+loadBoss(); // pre-init so HUD refs are safe
+state="menu";
+loop();
+</script>
+</body>
+</html>
